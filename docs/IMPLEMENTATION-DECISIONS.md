@@ -70,18 +70,18 @@ Có thể tổ chức lại dưới `src/`, nhưng phải giữ các boundary tr
 
 Stack scaffold được chốt cho phiên bản đầu:
 
-| Thành phần | Quyết định |
-|---|---|
-| Runtime | Bun |
-| Backend | Hono |
-| Frontend | None |
-| Database | None |
-| ORM | None |
-| API layer | None |
-| Auth framework | None |
-| Package manager | Bun |
-| Examples | None |
-| Deployment | Native host hoặc Docker cùng môi trường với `omp` |
+| Thành phần      | Quyết định                                        |
+| --------------- | ------------------------------------------------- |
+| Runtime         | Bun                                               |
+| Backend         | Hono                                              |
+| Frontend        | None                                              |
+| Database        | None                                              |
+| ORM             | None                                              |
+| API layer       | None                                              |
+| Auth framework  | None                                              |
+| Package manager | Bun                                               |
+| Examples        | None                                              |
+| Deployment      | Native host hoặc Docker cùng môi trường với `omp` |
 
 Lệnh scaffold đề xuất:
 

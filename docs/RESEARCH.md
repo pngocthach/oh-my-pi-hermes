@@ -15,11 +15,11 @@ Không port nguyên Hermes Agent và không sửa code Open WebUI.
 
 Các repository được clone vào `.research/`, không tracked trong worktree chính:
 
-| Repository | Đường dẫn | HEAD khảo sát |
-|---|---|---|
-| Hermes Agent | `.research/hermes-agent` | `6e9cae6` |
-| Open WebUI | `.research/open-webui` | `01f4282` |
-| oh-my-pi | `.research/oh-my-pi` | `3a8591a8a` |
+| Repository   | Đường dẫn                | HEAD khảo sát |
+| ------------ | ------------------------ | ------------- |
+| Hermes Agent | `.research/hermes-agent` | `6e9cae6`     |
+| Open WebUI   | `.research/open-webui`   | `01f4282`     |
+| oh-my-pi     | `.research/oh-my-pi`     | `3a8591a8a`   |
 
 `.research/` được thêm vào `.git/info/exclude`.
 

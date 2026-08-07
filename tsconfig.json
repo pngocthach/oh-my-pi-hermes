@@ -1,0 +1,3 @@
+{
+	"extends": "@oh-my-pi-hermes/config/tsconfig.base.json"
+}
