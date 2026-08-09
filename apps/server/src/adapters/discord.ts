@@ -12,7 +12,11 @@ import {
 	Partials,
 	ThreadAutoArchiveDuration,
 } from "discord.js";
-import { discordStreamPreview, splitDiscordMessage } from "../message-format";
+import {
+	discordStreamPreview,
+	formatDiscordMessage,
+	splitDiscordMessage,
+} from "../message-format";
 import { type RpcFrame, textDeltaFromFrame } from "../rpc/protocol";
 import type {
 	AvailableModel,
@@ -505,7 +509,7 @@ export class DiscordAdapter {
 				const text = textDeltaFromFrame(frame);
 				if (text) visibleText += text;
 				statusText = this.#statusForFrame(frame, statusText);
-				const display = visibleText || statusText;
+				const display = formatDiscordMessage(visibleText || statusText);
 				if (!display) continue;
 				const preview = discordStreamPreview(display);
 				const elapsed = Date.now() - lastEditAt;
@@ -532,15 +536,16 @@ export class DiscordAdapter {
 					await responseMessage.delete().catch(() => undefined);
 				return;
 			}
-			const chunks = splitDiscordMessage(visibleText);
+			const formatted = formatDiscordMessage(visibleText);
+			const chunks = splitDiscordMessage(formatted);
 			if (!responseMessage)
 				responseMessage = await this.#sendInitial(
 					prompt,
-					chunks[0] ?? visibleText,
+					chunks[0] ?? formatted,
 				);
 			else
 				await responseMessage.edit({
-					content: chunks[0] ?? visibleText,
+					content: chunks[0] ?? formatted,
 					allowedMentions: SAFE_MENTIONS,
 				});
 			let previous = responseMessage;

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	discordStreamPreview,
+	formatDiscordMessage,
 	splitDiscordMessage,
 } from "../src/message-format";
 
@@ -24,5 +25,14 @@ describe("Discord output formatting", () => {
 
 	test("caps streaming previews at 2,000 characters", () => {
 		expect(discordStreamPreview("x".repeat(3_000))).toHaveLength(2_000);
+	});
+	test("converts Markdown tables to readable Discord bullets", () => {
+		const formatted = formatDiscordMessage(
+			"| Service | Status |\n|---|---|\n| api | UP |\n| db | DOWN |",
+		);
+		expect(formatted).toContain("**api**");
+		expect(formatted).toContain("• Status: UP");
+		expect(formatted).toContain("**db**");
+		expect(formatted).not.toContain("|---|");
 	});
 });

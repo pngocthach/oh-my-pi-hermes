@@ -18,6 +18,7 @@ const pools: SessionWorkerPool[] = [];
 const adapters: DiscordAdapter[] = [];
 
 interface Sent {
+	id: string;
 	content: string;
 	replyMessageReference?: string;
 }
@@ -49,20 +50,22 @@ function makeChannel(dm: boolean): ChannelRecord {
 			content: string;
 			reply?: { messageReference: string; failIfNotExists?: boolean };
 		}) => {
-			messageCounter += 1;
+			const id = `out-${messageCounter}`;
 			sent.push({
+				id,
 				content: options.content,
 				replyMessageReference: options.reply?.messageReference,
 			});
-			const id = `out-${messageCounter}`;
 			return {
 				id,
 				content: options.content,
 				edit: async (editOptions: { content: string }) => {
 					record.editCalls += 1;
+					const previous = record.sent.at(-1);
 					record.sent[record.sent.length - 1] = {
+						id: previous?.id ?? id,
 						content: editOptions.content,
-						replyMessageReference: options.reply?.messageReference,
+						replyMessageReference: previous?.replyMessageReference,
 					};
 				},
 				delete: async () => undefined,
@@ -266,5 +269,24 @@ describe("Discord adapter message pipeline", () => {
 		} finally {
 			process.env.FAKE_OMP_DELAY_MS = previous;
 		}
+	});
+	test("links overflow continuations as replies to the prior message", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "hermes-discord-"));
+		temporaryDirectories.push(directory);
+		const fakeClient = new FakeClient();
+		const adapter = await makeAdapter(
+			directory,
+			fakeClient as unknown as Client,
+		);
+		await adapter.start();
+		const record = makeChannel(true);
+		fakeClient.emit(
+			Events.MessageCreate,
+			makeUserMessage("LONG: report", record.channel),
+		);
+		await Bun.sleep(600);
+		expect(record.sent.length).toBe(2);
+		expect(record.sent[1]?.replyMessageReference).toBe(record.sent[0]?.id);
+		expect(record.sent[1]?.content).toContain("(2/2)");
 	});
 });
