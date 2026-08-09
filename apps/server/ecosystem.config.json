@@ -1,0 +1,19 @@
+{
+  "apps": [
+    {
+      "name": "hermes-gateway",
+      "script": "./dist/index.mjs",
+      "instances": 1,
+      "autorestart": true,
+      "restartDelay": 3000,
+      "maxRestarts": 20,
+      "maxMemoryRestart": "512M",
+      "healthCheckUrl": "http://127.0.0.1:3000/health",
+      "healthCheckInterval": 15000,
+      "healthCheckMaxFails": 3,
+      "logMaxSize": "50M",
+      "logRetain": 10,
+      "logCompress": true
+    }
+  ]
+}
