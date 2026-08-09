@@ -32,6 +32,8 @@ export interface DiscordAdapterOptions {
 	token: string;
 	pool: SessionWorkerPool;
 	policy: DiscordPolicy;
+	/** Inject a pre-configured client (tests, custom intents). */
+	client?: Client;
 }
 interface DiscordOutputChannel {
 	id: string;
@@ -59,16 +61,18 @@ export class DiscordAdapter {
 
 	constructor(options: DiscordAdapterOptions) {
 		this.#options = options;
-		this.#client = new Client({
-			intents: [
-				GatewayIntentBits.Guilds,
-				GatewayIntentBits.GuildMessages,
-				GatewayIntentBits.DirectMessages,
-				GatewayIntentBits.MessageContent,
-			],
-			partials: [Partials.Channel],
-			allowedMentions: SAFE_MENTIONS,
-		});
+		this.#client =
+			options.client ??
+			new Client({
+				intents: [
+					GatewayIntentBits.Guilds,
+					GatewayIntentBits.GuildMessages,
+					GatewayIntentBits.DirectMessages,
+					GatewayIntentBits.MessageContent,
+				],
+				partials: [Partials.Channel],
+				allowedMentions: SAFE_MENTIONS,
+			});
 		this.#client.on(
 			Events.MessageCreate,
 			(message) => void this.#onMessage(message),

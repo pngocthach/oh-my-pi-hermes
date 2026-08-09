@@ -1,0 +1,269 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { EventEmitter } from "node:events";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { type Client, Events } from "discord.js";
+import { DiscordAdapter } from "../src/adapters/discord";
+import { SessionStore } from "../src/session/session-store";
+import { SessionWorkerPool } from "../src/session/session-worker-pool";
+
+const fakeOmpCommand = [
+	process.execPath,
+	join(import.meta.dir, "fixtures/fake-omp.ts"),
+];
+
+const temporaryDirectories: string[] = [];
+const pools: SessionWorkerPool[] = [];
+const adapters: DiscordAdapter[] = [];
+
+interface Sent {
+	content: string;
+	replyMessageReference?: string;
+}
+
+interface ChannelRecord {
+	channel: unknown;
+	sent: Sent[];
+	editCalls: number;
+}
+
+let messageCounter = 0;
+
+function makeChannel(dm: boolean): ChannelRecord {
+	const sent: Sent[] = [];
+	const record: ChannelRecord = {
+		channel: undefined as never,
+		sent,
+		editCalls: 0,
+	};
+	const channel = {
+		id: "ch-1",
+		isDMBased: () => dm,
+		isThread: () => false,
+		get parentId() {
+			return undefined;
+		},
+		sendTyping: async () => undefined,
+		send: async (options: {
+			content: string;
+			reply?: { messageReference: string; failIfNotExists?: boolean };
+		}) => {
+			messageCounter += 1;
+			sent.push({
+				content: options.content,
+				replyMessageReference: options.reply?.messageReference,
+			});
+			const id = `out-${messageCounter}`;
+			return {
+				id,
+				content: options.content,
+				edit: async (editOptions: { content: string }) => {
+					record.editCalls += 1;
+					record.sent[record.sent.length - 1] = {
+						content: editOptions.content,
+						replyMessageReference: options.reply?.messageReference,
+					};
+				},
+				delete: async () => undefined,
+			};
+		},
+		messages: { fetch: async () => new Map() },
+	};
+	record.channel = channel;
+	return record;
+}
+
+class FakeClient extends EventEmitter {
+	user: { id: string; tag: string } | null = {
+		id: "bot-1",
+		tag: "Hermes#0000",
+	};
+	async login(): Promise<string> {
+		this.emit(Events.ClientReady, {});
+		return "ok";
+	}
+	async destroy(): Promise<void> {}
+}
+
+function makeUserMessage(content: string, channel: unknown) {
+	return {
+		id: `user-msg-${++messageCounter}`,
+		author: { id: "user-1", bot: false },
+		webhookId: undefined,
+		content,
+		channel,
+		guildId: null,
+		mentions: { users: new Map() },
+		createdTimestamp: Date.now(),
+	};
+}
+
+async function makePool(directory: string): Promise<SessionWorkerPool> {
+	const pool = new SessionWorkerPool({
+		sessionRoot: join(directory, "sessions"),
+		maxWorkers: 2,
+		idleMs: 60_000,
+		store: new SessionStore(join(directory, "gateway-sessions.json")),
+		transport: {
+			command: fakeOmpCommand,
+			startTimeoutMs: 5_000,
+			commandTimeoutMs: 5_000,
+			shutdownTimeoutMs: 500,
+		},
+	});
+	await pool.initialize();
+	pools.push(pool);
+	return pool;
+}
+
+async function makeAdapter(directory: string, fakeClient: Client) {
+	const pool = await makePool(directory);
+	const adapter = new DiscordAdapter({
+		token: "test-token",
+		pool,
+		client: fakeClient,
+		policy: {
+			allowedGuildIds: new Set(),
+			allowedUserIds: new Set(["user-1"]),
+			allowedChannelIds: new Set(),
+			ignoredChannelIds: new Set(),
+			freeResponseChannelIds: new Set(),
+			enableDms: true,
+			requireMention: false,
+			autoThread: false,
+		},
+	});
+	adapters.push(adapter);
+	return adapter;
+}
+
+// Integration test: the adapter pipeline runs on real timers (drain debounce,
+// typing refresh), so a bounded wait for the first message is required.
+async function waitForMessage(
+	record: ChannelRecord,
+	timeoutMs = 5_000,
+): Promise<void> {
+	const deadline = Date.now() + timeoutMs;
+	while (record.sent.length === 0 && Date.now() < deadline) {
+		await Bun.sleep(20);
+	}
+	expect(record.sent.length).toBeGreaterThan(0);
+}
+
+afterEach(async () => {
+	await Promise.allSettled(pools.splice(0).map((pool) => pool.shutdown()));
+	await Promise.allSettled(adapters.splice(0).map((adapter) => adapter.stop()));
+	await Promise.allSettled(
+		temporaryDirectories
+			.splice(0)
+			.map((directory) => rm(directory, { recursive: true, force: true })),
+	);
+});
+
+describe("Discord adapter message pipeline", () => {
+	test("one multi-line user message produces exactly one bot message", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "hermes-discord-"));
+		temporaryDirectories.push(directory);
+		const fakeClient = new FakeClient();
+		const adapter = await makeAdapter(
+			directory,
+			fakeClient as unknown as Client,
+		);
+		await adapter.start();
+		const record = makeChannel(true);
+		fakeClient.emit(
+			Events.MessageCreate,
+			makeUserMessage("dòng một\ndòng hai", record.channel),
+		);
+		await waitForMessage(record);
+		// Drain debounce has passed; allow the turn to finish editing.
+		await Bun.sleep(150);
+		expect(record.sent).toHaveLength(1);
+		expect(record.sent[0]?.content).toBe("Echo: dòng một\ndòng hai");
+		expect(record.sent[0]?.replyMessageReference).toBe("user-msg-1");
+	});
+
+	test("two rapid user messages are merged into a single turn", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "hermes-discord-"));
+		temporaryDirectories.push(directory);
+		const fakeClient = new FakeClient();
+		const adapter = await makeAdapter(
+			directory,
+			fakeClient as unknown as Client,
+		);
+		await adapter.start();
+		const record = makeChannel(true);
+		fakeClient.emit(
+			Events.MessageCreate,
+			makeUserMessage("first", record.channel),
+		);
+		fakeClient.emit(
+			Events.MessageCreate,
+			makeUserMessage("second", record.channel),
+		);
+		await waitForMessage(record);
+		await Bun.sleep(150);
+		expect(record.sent).toHaveLength(1);
+		expect(record.sent[0]?.content).toBe("Echo: first\n\nsecond");
+	});
+
+	test("a reply longer than 2000 chars splits into multiple messages", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "hermes-discord-"));
+		temporaryDirectories.push(directory);
+		const fakeClient = new FakeClient();
+		const adapter = await makeAdapter(
+			directory,
+			fakeClient as unknown as Client,
+		);
+		await adapter.start();
+		const record = makeChannel(true);
+		// "LONG:" makes fake-omp emit a multi-line reply just over 2000 chars,
+		// forcing Discord's message-limit splitter into 2 chunks.
+		fakeClient.emit(
+			Events.MessageCreate,
+			makeUserMessage("LONG: explain", record.channel),
+		);
+		await waitForMessage(record);
+		await Bun.sleep(200);
+		expect(record.sent.length).toBe(2);
+		const combined = record.sent.map((m) => m.content).join("\n");
+		expect(combined).toContain("Line one");
+		expect(combined).toContain("The end");
+	});
+
+	test("a follow-up sent while a turn is running yields a second reply", async () => {
+		const previous = process.env.FAKE_OMP_DELAY_MS;
+		process.env.FAKE_OMP_DELAY_MS = "800";
+		try {
+			const directory = await mkdtemp(join(tmpdir(), "hermes-discord-"));
+			temporaryDirectories.push(directory);
+			const fakeClient = new FakeClient();
+			const adapter = await makeAdapter(
+				directory,
+				fakeClient as unknown as Client,
+			);
+			await adapter.start();
+			const record = makeChannel(true);
+			fakeClient.emit(
+				Events.MessageCreate,
+				makeUserMessage("first", record.channel),
+			);
+			// First turn is in flight (drain 250ms + fake delay 800ms); the
+			// follow-up arrives after the debounce window, so it gets its own turn.
+			await Bun.sleep(450);
+			fakeClient.emit(
+				Events.MessageCreate,
+				makeUserMessage("second", record.channel),
+			);
+			await waitForMessage(record, 8_000);
+			// Allow both turns to complete.
+			await Bun.sleep(1_800);
+			expect(record.sent.length).toBe(2);
+			expect(record.sent[0]?.content).toBe("Echo: first");
+			expect(record.sent[1]?.content).toBe("Echo: second");
+		} finally {
+			process.env.FAKE_OMP_DELAY_MS = previous;
+		}
+	});
+});

@@ -9,6 +9,7 @@ if (sessionDirIndex < 0 || !requestedSessionDirectory)
 const sessionDirectory: string = requestedSessionDirectory;
 await mkdir(sessionDirectory, { recursive: true });
 
+const inputDelayMs = process.env.FAKE_OMP_DELAY_MS ?? "0";
 let sessionId: string = crypto.randomUUID();
 let sessionName: string | undefined;
 let messageCount = 0;
@@ -116,7 +117,12 @@ while (true) {
 				break;
 			}
 			case "prompt": {
-				const text = `Echo: ${String(command.message)}`;
+				const raw = String(command.message);
+				const delayMs = Number(inputDelayMs);
+				if (delayMs > 0) await Bun.sleep(delayMs);
+				const text = raw.startsWith("LONG:")
+					? `Line one\n\n${"lorem ipsum dolor sit amet\n".repeat(90)}The end`
+					: `Echo: ${raw}`;
 				messageCount += 2;
 				await persist();
 				emit({
