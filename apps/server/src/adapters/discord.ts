@@ -392,6 +392,7 @@ export class DiscordAdapter {
 			.replaceAll(`<@!${botId}>`, "")
 			.trim();
 		if (!content) return;
+		await this.#react(message, "👀");
 		let outputChannel: DiscordOutputChannel = message.channel;
 		let threadTitleInput: string | undefined;
 		let threadToRename: DiscordThreadChannel | undefined;
@@ -595,6 +596,7 @@ export class DiscordAdapter {
 			if (!visibleText) {
 				if (responseMessage)
 					await responseMessage.delete().catch(() => undefined);
+				await this.#react(prompt.message, "✅");
 				return;
 			}
 			const formatted = formatDiscordMessage(visibleText);
@@ -609,14 +611,13 @@ export class DiscordAdapter {
 					content: chunks[0] ?? formatted,
 					allowedMentions: SAFE_MENTIONS,
 				});
-			let previous = responseMessage;
 			for (const chunk of chunks.slice(1)) {
-				previous = await prompt.channel.send({
+				await prompt.channel.send({
 					content: chunk,
-					reply: { messageReference: previous.id, failIfNotExists: false },
 					allowedMentions: SAFE_MENTIONS,
 				});
 			}
+			await this.#react(prompt.message, "✅");
 		} catch (error) {
 			console.error(`Discord turn failed for ${prompt.sessionKey}`, error);
 			const content = `Gateway error: ${error instanceof Error ? error.message : String(error)}`;
@@ -625,9 +626,14 @@ export class DiscordAdapter {
 					.edit({ content, allowedMentions: SAFE_MENTIONS })
 					.catch(() => undefined);
 			else await this.#sendInitial(prompt, content).catch(() => undefined);
+			await this.#react(prompt.message, "❌");
 		} finally {
 			clearInterval(typingTimer);
 		}
+	}
+
+	async #react(message: Message, emoji: string): Promise<void> {
+		await message.react(emoji).catch(() => undefined);
 	}
 
 	async #sendInitial(

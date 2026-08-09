@@ -94,6 +94,7 @@ class FakeClient extends EventEmitter {
 }
 
 function makeUserMessage(content: string, channel: unknown) {
+	const reactions: string[] = [];
 	return {
 		id: `user-msg-${++messageCounter}`,
 		author: { id: "user-1", bot: false },
@@ -103,6 +104,10 @@ function makeUserMessage(content: string, channel: unknown) {
 		guildId: null,
 		mentions: { users: new Map() },
 		createdTimestamp: Date.now(),
+		reactions,
+		react: async (emoji: string) => {
+			reactions.push(emoji);
+		},
 	};
 }
 
@@ -181,16 +186,16 @@ describe("Discord adapter message pipeline", () => {
 		);
 		await adapter.start();
 		const record = makeChannel(true);
-		fakeClient.emit(
-			Events.MessageCreate,
-			makeUserMessage("dòng một\ndòng hai", record.channel),
+		const userMessage = makeUserMessage(
+			"dòng một\ndòng hai",
+			record.channel,
 		);
+		fakeClient.emit(Events.MessageCreate, userMessage);
 		await waitForMessage(record);
 		// Drain debounce has passed; allow the turn to finish editing.
 		await Bun.sleep(150);
 		expect(record.sent).toHaveLength(1);
-		expect(record.sent[0]?.content).toBe("Echo: dòng một\ndòng hai");
-		expect(record.sent[0]?.replyMessageReference).toBe("user-msg-1");
+		expect(userMessage.reactions).toEqual(["👀", "✅"]);
 	});
 
 	test("two rapid user messages are merged into a single turn", async () => {
@@ -275,7 +280,7 @@ describe("Discord adapter message pipeline", () => {
 			process.env.FAKE_OMP_DELAY_MS = previous;
 		}
 	});
-	test("links overflow continuations as replies to the prior message", async () => {
+	test("sends overflow continuations as consecutive messages", async () => {
 		const directory = await mkdtemp(join(tmpdir(), "hermes-discord-"));
 		temporaryDirectories.push(directory);
 		const fakeClient = new FakeClient();
@@ -291,7 +296,7 @@ describe("Discord adapter message pipeline", () => {
 		);
 		await Bun.sleep(600);
 		expect(record.sent.length).toBe(2);
-		expect(record.sent[1]?.replyMessageReference).toBe(record.sent[0]?.id);
+		expect(record.sent[1]?.replyMessageReference).toBeUndefined();
 		expect(record.sent[1]?.content).toContain("(2/2)");
 	});
 	test("renames an auto-created thread with a generated title", async () => {
