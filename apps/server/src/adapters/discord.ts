@@ -1,7 +1,12 @@
 import {
+	type AutocompleteInteraction,
+	type ChatInputCommandInteraction,
 	Client,
 	Events,
 	GatewayIntentBits,
+	REST,
+	Routes,
+	type Interaction,
 	type Message,
 	type MessageCreateOptions,
 	Partials,
@@ -9,7 +14,17 @@ import {
 } from "discord.js";
 import { discordStreamPreview, splitDiscordMessage } from "../message-format";
 import { type RpcFrame, textDeltaFromFrame } from "../rpc/protocol";
+import type {
+	AvailableModel,
+	SessionWorker,
+} from "../session/session-worker";
 import type { SessionWorkerPool } from "../session/session-worker-pool";
+import {
+	buildOmpCommand,
+	modelChoiceValue,
+	OMP_COMMAND_NAME,
+	parseModelChoice,
+} from "./discord-commands";
 
 const STREAM_EDIT_INTERVAL_MS = 800;
 const STREAM_BUFFER_THRESHOLD = 24;
@@ -34,7 +49,16 @@ export interface DiscordAdapterOptions {
 	policy: DiscordPolicy;
 	/** Inject a pre-configured client (tests, custom intents). */
 	client?: Client;
+	/** Disable application-command registration for isolated tests. */
+	registerCommands?: boolean;
 }
+const MODEL_CACHE_MS = 30_000;
+
+interface CachedModels {
+	expiresAt: number;
+	models: AvailableModel[];
+}
+
 interface DiscordOutputChannel {
 	id: string;
 	sendTyping(): Promise<void>;
@@ -58,6 +82,7 @@ export class DiscordAdapter {
 	readonly #client: Client;
 	readonly #seenMessageIds = new Set<string>();
 	readonly #queues = new Map<string, ConversationQueue>();
+	readonly #modelCache = new Map<string, CachedModels>();
 
 	constructor(options: DiscordAdapterOptions) {
 		this.#options = options;
@@ -76,6 +101,10 @@ export class DiscordAdapter {
 		this.#client.on(
 			Events.MessageCreate,
 			(message) => void this.#onMessage(message),
+		);
+		this.#client.on(
+			Events.InteractionCreate,
+			(interaction) => void this.#onInteraction(interaction),
 		);
 		this.#client.on(Events.Error, (error) =>
 			console.error("Discord client error", error),
@@ -106,6 +135,7 @@ export class DiscordAdapter {
 				);
 			}),
 		]);
+		await this.#registerCommands();
 		console.info(`Discord connected as ${this.#client.user?.tag ?? "unknown"}`);
 	}
 
@@ -117,6 +147,178 @@ export class DiscordAdapter {
 				while (queue.running) await Bun.sleep(25);
 			});
 		await Promise.allSettled(drains);
+	}
+
+	async #registerCommands(): Promise<void> {
+		if (this.#options.registerCommands === false) return;
+		const applicationId = this.#client.user?.id;
+		if (!applicationId) throw new Error("Discord client has no application ID");
+		const body = [buildOmpCommand().toJSON()];
+		const rest = new REST({ version: "10" }).setToken(this.#options.token);
+		const guildIds = [...this.#options.policy.allowedGuildIds];
+		if (guildIds.length === 0) {
+			await rest.put(Routes.applicationCommands(applicationId), { body });
+			return;
+		}
+		await Promise.all(
+			guildIds.map((guildId) =>
+				rest.put(Routes.applicationGuildCommands(applicationId, guildId), {
+					body,
+				}),
+			),
+		);
+	}
+
+	#interactionChannelIds(
+		interaction: AutocompleteInteraction | ChatInputCommandInteraction,
+	): string[] {
+		const parentId =
+			interaction.channel?.isThread() === true
+				? interaction.channel.parentId
+				: null;
+		return [interaction.channelId, ...(parentId ? [parentId] : [])];
+	}
+
+	#admitInteraction(
+		interaction: AutocompleteInteraction | ChatInputCommandInteraction,
+	): boolean {
+		const { guildId, user } = interaction;
+		if (!guildId)
+			return (
+				this.#options.policy.enableDms &&
+				this.#options.policy.allowedUserIds.has(user.id)
+			);
+		const channelIds = this.#interactionChannelIds(interaction);
+		if (
+			channelIds.some((id) =>
+				this.#options.policy.ignoredChannelIds.has(id),
+			)
+		)
+			return false;
+		if (
+			this.#options.policy.allowedChannelIds.size > 0 &&
+			!channelIds.some((id) =>
+				this.#options.policy.allowedChannelIds.has(id),
+			)
+		)
+			return false;
+		const guildAllowed =
+			this.#options.policy.allowedGuildIds.size > 0 &&
+			this.#options.policy.allowedGuildIds.has(guildId);
+		const userAllowed =
+			this.#options.policy.allowedUserIds.size > 0 &&
+			this.#options.policy.allowedUserIds.has(user.id);
+		return guildAllowed || userAllowed;
+	}
+
+	#interactionSessionKey(
+		interaction: AutocompleteInteraction | ChatInputCommandInteraction,
+	): string {
+		if (!interaction.guildId) return `discord:dm:${interaction.channelId}`;
+		if (interaction.channel?.isThread() === true)
+			return `discord:${interaction.guildId}:thread:${interaction.channelId}`;
+		return `discord:${interaction.guildId}:channel:${interaction.channelId}:user:${interaction.user.id}`;
+	}
+
+	async #modelsFor(
+		sessionKey: string,
+		worker: SessionWorker,
+	): Promise<AvailableModel[]> {
+		const cached = this.#modelCache.get(sessionKey);
+		if (cached && cached.expiresAt > Date.now()) return cached.models;
+		const models = await worker.getAvailableModels();
+		this.#modelCache.set(sessionKey, {
+			expiresAt: Date.now() + MODEL_CACHE_MS,
+			models,
+		});
+		return models;
+	}
+
+	async #completeModel(interaction: AutocompleteInteraction): Promise<void> {
+		if (!this.#admitInteraction(interaction)) {
+			await interaction.respond([]);
+			return;
+		}
+		try {
+			const sessionKey = this.#interactionSessionKey(interaction);
+			const worker = await this.#options.pool.getOrCreate(sessionKey, true);
+			const models = await this.#modelsFor(sessionKey, worker);
+			const focused = interaction.options.getFocused().toLowerCase();
+			const choices = models
+				.map((model) => ({
+					name: `${model.provider}/${model.id}${model.name ? ` — ${model.name}` : ""}`,
+					value: modelChoiceValue(model),
+				}))
+				.filter(
+					(model) =>
+						model.name.toLowerCase().includes(focused) &&
+						model.value.length <= 100,
+				)
+				.slice(0, 25);
+			await interaction.respond(choices);
+		} catch (error) {
+			console.warn("Discord model autocomplete failed", error);
+			await interaction.respond([]);
+		}
+	}
+
+	async #onInteraction(interaction: Interaction): Promise<void> {
+		if (interaction.isAutocomplete()) {
+			if (
+				interaction.commandName === OMP_COMMAND_NAME &&
+				interaction.options.getSubcommand(false) === "model"
+			)
+				await this.#completeModel(interaction);
+			return;
+		}
+		if (
+			!interaction.isChatInputCommand() ||
+			interaction.commandName !== OMP_COMMAND_NAME ||
+			interaction.options.getSubcommand() !== "model"
+		)
+			return;
+		if (!this.#admitInteraction(interaction)) {
+			await interaction.reply({
+				content: "You are not allowed to use this bot.",
+				ephemeral: true,
+			});
+			return;
+		}
+		await interaction.deferReply({ ephemeral: true });
+		try {
+			const sessionKey = this.#interactionSessionKey(interaction);
+			const worker = await this.#options.pool.getOrCreate(sessionKey, true);
+			const models = await this.#modelsFor(sessionKey, worker);
+			const selected = interaction.options.getString("model");
+			if (!selected) {
+				const current = worker.state.model;
+				await interaction.editReply(
+					current?.provider && current.id
+						? `Current model: ${current.provider}/${current.id}`
+						: "No model is currently selected. Choose one from autocomplete.",
+				);
+				return;
+			}
+			const choice = parseModelChoice(selected);
+			const model = choice
+				? models.find(
+						(candidate) =>
+							candidate.provider === choice.provider &&
+							candidate.id === choice.id,
+					)
+				: undefined;
+			if (!model) {
+				await interaction.editReply("That model is no longer available. Try autocomplete again.");
+				return;
+			}
+			await worker.setModel(model);
+			this.#modelCache.delete(sessionKey);
+			await interaction.editReply(`Model set to ${modelChoiceValue(model)}.`);
+		} catch (error) {
+			await interaction.editReply(
+				`Model change failed: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 
 	async #onMessage(message: Message): Promise<void> {

@@ -80,6 +80,22 @@ describe("RPC transport and workers", () => {
 		expect(deltas).toEqual(["Echo: transport"]);
 		await transport.stop();
 	});
+	test("lists and switches models through the worker RPC", async () => {
+		const directory = await makeDirectory();
+		const pool = await makePool(directory);
+		const worker = await pool.getOrCreate("discord:model-test");
+
+		await expect(worker.getAvailableModels()).resolves.toEqual([
+			{ provider: "fake", id: "fast", name: "Fake Fast" },
+			{ provider: "fake", id: "smart", name: "Fake Smart" },
+		]);
+
+		await worker.setModel({ provider: "fake", id: "smart" });
+		expect(worker.state.model).toMatchObject({
+			provider: "fake",
+			id: "smart",
+		});
+	});
 
 	test("resumes the same OMP session after the worker pool restarts", async () => {
 		const directory = await makeDirectory();

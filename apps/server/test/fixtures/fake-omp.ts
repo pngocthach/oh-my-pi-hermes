@@ -12,6 +12,7 @@ await mkdir(sessionDirectory, { recursive: true });
 const inputDelayMs = process.env.FAKE_OMP_DELAY_MS ?? "0";
 let sessionId: string = crypto.randomUUID();
 let sessionName: string | undefined;
+let currentModel = { provider: "fake", id: "fast", name: "Fake Fast" };
 let messageCount = 0;
 let sessionFile = join(sessionDirectory, `fake_${sessionId}.jsonl`);
 
@@ -75,7 +76,36 @@ while (true) {
 						isStreaming: false,
 						messageCount,
 						queuedMessageCount: 0,
+						model: currentModel,
 					},
+				});
+				break;
+			case "get_available_models":
+				emit({
+					type: "response",
+					command: command.type,
+					id: command.id,
+					success: true,
+					data: {
+						models: [
+							{ provider: "fake", id: "fast", name: "Fake Fast" },
+							{ provider: "fake", id: "smart", name: "Fake Smart" },
+						],
+					},
+				});
+				break;
+			case "set_model":
+				currentModel = {
+					provider: String(command.provider),
+					id: String(command.modelId),
+					name: String(command.modelId),
+				};
+				emit({
+					type: "response",
+					command: command.type,
+					id: command.id,
+					success: true,
+					data: currentModel,
 				});
 				break;
 			case "set_session_name":

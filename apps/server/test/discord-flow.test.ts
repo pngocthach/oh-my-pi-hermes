@@ -123,6 +123,7 @@ async function makeAdapter(directory: string, fakeClient: Client) {
 		token: "test-token",
 		pool,
 		client: fakeClient,
+		registerCommands: false,
 		policy: {
 			allowedGuildIds: new Set(),
 			allowedUserIds: new Set(["user-1"]),

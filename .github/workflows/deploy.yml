@@ -62,7 +62,7 @@ jobs:
           cd "$1"
           deploy_step "sync" git pull --ff-only origin main
           deploy_step "install" bun install --frozen-lockfile
-          deploy_step "test" bun test
+          deploy_step "test" bun test apps/server/test
           deploy_step "types" bun run check-types
           deploy_step "build" bun run build
           cd apps/server

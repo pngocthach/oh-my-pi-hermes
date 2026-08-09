@@ -9,6 +9,17 @@ import { RpcTransport, type RpcTransportOptions } from "../rpc/transport";
 import type { SessionStore, StoredSession } from "./session-store";
 
 const promptResponseSchema = z.object({ agentInvoked: z.boolean() }).optional();
+const availableModelsResponseSchema = z.object({
+	models: z.array(
+		z
+			.object({
+				provider: z.string().min(1),
+				id: z.string().min(1),
+				name: z.string().optional(),
+			})
+			.passthrough(),
+	),
+});
 
 type EventListener = (frame: RpcFrame) => void;
 
@@ -64,6 +75,12 @@ export interface SessionWorkerOptions {
 	persistent: boolean;
 	store: SessionStore;
 	transport: Omit<RpcTransportOptions, "sessionDirectory">;
+}
+
+export interface AvailableModel {
+	provider: string;
+	id: string;
+	name?: string;
 }
 
 export class SessionBusyError extends Error {
@@ -225,6 +242,29 @@ export class SessionWorker {
 	async abort(): Promise<void> {
 		if (!this.#transport?.isRunning) return;
 		await this.#transport.sendCommand({ type: "abort" });
+	}
+	async getAvailableModels(): Promise<AvailableModel[]> {
+		if (!this.#transport || !this.isAlive)
+			throw new Error("Session worker is not running");
+		const response = await this.#transport.sendCommand<{
+			models: AvailableModel[];
+		}>({ type: "get_available_models" });
+		if (!response.success)
+			throw new Error(response.error ?? "Failed to list available models");
+		return availableModelsResponseSchema.parse(response.data).models;
+	}
+
+	async setModel(model: Pick<AvailableModel, "provider" | "id">): Promise<void> {
+		if (!this.#transport || !this.isAlive)
+			throw new Error("Session worker is not running");
+		const response = await this.#transport.sendCommand({
+			type: "set_model",
+			provider: model.provider,
+			modelId: model.id,
+		});
+		if (!response.success)
+			throw new Error(response.error ?? "Failed to set model");
+		await this.#refreshState();
 	}
 
 	async commitExternalMessage(
