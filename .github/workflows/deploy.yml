@@ -50,5 +50,13 @@ jobs:
              cd apps/server
              bm2 restart hermes-gateway
              bm2 save
-             curl --fail --silent --show-error http://127.0.0.1:3000/health
-             echo \"Deployment successful\""
+             for attempt in $(seq 1 20); do
+               if curl --fail --silent --show-error http://127.0.0.1:3000/health; then
+                 echo
+                 echo \"Deployment successful\"
+                 exit 0
+               fi
+               sleep 1
+             done
+             echo \"Hermes did not become healthy after restart\" >&2
+             exit 1"
