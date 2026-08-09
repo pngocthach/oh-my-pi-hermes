@@ -39,24 +39,45 @@ jobs:
             -o BatchMode=yes \
             -o StrictHostKeyChecking=yes \
             "$DEPLOY_USER@$DEPLOY_HOST" \
-            "set -e
-             export PATH=\"\$HOME/.bun/bin:\$PATH\"
-             cd \"$DEPLOY_PATH\"
-             git pull --ff-only origin main
-             bun install --frozen-lockfile
-             bun test
-             bun run check-types
-             bun run build
-             cd apps/server
-             bm2 restart hermes-gateway
-             bm2 save
-             for attempt in \$(seq 1 20); do
-               if curl --fail --silent --show-error http://127.0.0.1:3000/health; then
-                 echo
-                 echo \"Deployment successful\"
-                 exit 0
-               fi
-               sleep 1
-             done
-             echo \"Hermes did not become healthy after restart\" >&2
-             exit 1"
+            bash -s -- "$DEPLOY_PATH" <<'REMOTE'
+          set -e
+
+          deploy_step() {
+            local label="$1"
+            shift
+            local log
+            log="$(mktemp)"
+            if "$@" >"$log" 2>&1; then
+              rm -f "$log"
+              printf '%s: ok\n' "$label"
+            else
+              printf '%s: failed\n' "$label" >&2
+              cat "$log" >&2
+              rm -f "$log"
+              return 1
+            fi
+          }
+
+          export PATH="$HOME/.bun/bin:$PATH"
+          cd "$1"
+          deploy_step "sync" git pull --ff-only origin main
+          deploy_step "install" bun install --frozen-lockfile
+          deploy_step "test" bun test
+          deploy_step "types" bun run check-types
+          deploy_step "build" bun run build
+          cd apps/server
+          deploy_step "restart" bm2 restart hermes-gateway
+          deploy_step "save" bm2 save
+
+          for attempt in $(seq 1 20); do
+            if curl --fail --silent http://127.0.0.1:3000/health >/dev/null; then
+              echo "health: ok"
+              exit 0
+            fi
+            sleep 1
+          done
+
+          echo "health: failed" >&2
+          bm2 list >&2 || true
+          exit 1
+          REMOTE
