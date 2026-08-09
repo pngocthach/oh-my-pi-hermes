@@ -50,7 +50,7 @@ jobs:
              cd apps/server
              bm2 restart hermes-gateway
              bm2 save
-             for attempt in $(seq 1 20); do
+             for attempt in \$(seq 1 20); do
                if curl --fail --silent --show-error http://127.0.0.1:3000/health; then
                  echo
                  echo \"Deployment successful\"
