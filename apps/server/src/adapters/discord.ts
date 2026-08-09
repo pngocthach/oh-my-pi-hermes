@@ -243,10 +243,15 @@ export class DiscordAdapter {
 			const sessionKey = this.#interactionSessionKey(interaction);
 			const worker = await this.#options.pool.getOrCreate(sessionKey, true);
 			const models = await this.#modelsFor(sessionKey, worker);
+			const current = worker.state.model;
 			const focused = interaction.options.getFocused().toLowerCase();
 			const choices = models
 				.map((model) => ({
-					name: `${model.provider}/${model.id}${model.name ? ` — ${model.name}` : ""}`,
+					name: `${model.provider}/${model.id}${model.name ? ` — ${model.name}` : ""}${
+						current?.provider === model.provider && current.id === model.id
+							? " (current)"
+							: ""
+					}`,
 					value: modelChoiceValue(model),
 				}))
 				.filter(
