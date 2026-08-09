@@ -27,11 +27,12 @@ interface ChannelRecord {
 	channel: unknown;
 	sent: Sent[];
 	editCalls: number;
+	name?: string;
 }
 
 let messageCounter = 0;
 
-function makeChannel(dm: boolean): ChannelRecord {
+function makeChannel(dm: boolean, thread = false): ChannelRecord {
 	const sent: Sent[] = [];
 	const record: ChannelRecord = {
 		channel: undefined as never,
@@ -39,11 +40,14 @@ function makeChannel(dm: boolean): ChannelRecord {
 		editCalls: 0,
 	};
 	const channel = {
-		id: "ch-1",
+		id: thread ? "thread-1" : "ch-1",
 		isDMBased: () => dm,
-		isThread: () => false,
+		isThread: () => thread,
 		get parentId() {
-			return undefined;
+			return thread ? "ch-1" : undefined;
+		},
+		setName: async (name: string) => {
+			record.name = name;
 		},
 		sendTyping: async () => undefined,
 		send: async (options: {
@@ -120,7 +124,11 @@ async function makePool(directory: string): Promise<SessionWorkerPool> {
 	return pool;
 }
 
-async function makeAdapter(directory: string, fakeClient: Client) {
+async function makeAdapter(
+	directory: string,
+	fakeClient: Client,
+	guild = false,
+) {
 	const pool = await makePool(directory);
 	const adapter = new DiscordAdapter({
 		token: "test-token",
@@ -128,22 +136,19 @@ async function makeAdapter(directory: string, fakeClient: Client) {
 		client: fakeClient,
 		registerCommands: false,
 		policy: {
-			allowedGuildIds: new Set(),
+			allowedGuildIds: guild ? new Set(["guild-1"]) : new Set(),
 			allowedUserIds: new Set(["user-1"]),
 			allowedChannelIds: new Set(),
 			ignoredChannelIds: new Set(),
 			freeResponseChannelIds: new Set(),
 			enableDms: true,
-			requireMention: false,
-			autoThread: false,
+			requireMention: guild,
+			autoThread: guild,
 		},
 	});
 	adapters.push(adapter);
 	return adapter;
 }
-
-// Integration test: the adapter pipeline runs on real timers (drain debounce,
-// typing refresh), so a bounded wait for the first message is required.
 async function waitForMessage(
 	record: ChannelRecord,
 	timeoutMs = 5_000,
@@ -288,5 +293,31 @@ describe("Discord adapter message pipeline", () => {
 		expect(record.sent.length).toBe(2);
 		expect(record.sent[1]?.replyMessageReference).toBe(record.sent[0]?.id);
 		expect(record.sent[1]?.content).toContain("(2/2)");
+	});
+	test("renames an auto-created thread with a generated title", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "hermes-discord-"));
+		temporaryDirectories.push(directory);
+		const fakeClient = new FakeClient();
+		const adapter = await makeAdapter(
+			directory,
+			fakeClient as unknown as Client,
+			true,
+		);
+		await adapter.start();
+		const parent = makeChannel(false);
+		const thread = makeChannel(false, true);
+		const message = Object.assign(
+			makeUserMessage("<@bot-1> Check the current system", parent.channel),
+			{
+				guildId: "guild-1",
+				mentions: { users: new Map([["bot-1", {}]]) },
+				startThread: async () => thread.channel,
+			},
+		);
+		fakeClient.emit(Events.MessageCreate, message);
+		await waitForMessage(thread);
+		const deadline = Date.now() + 5_000;
+		while (!thread.name && Date.now() < deadline) await Bun.sleep(20);
+		expect(thread.name).toContain("Echo:");
 	});
 });

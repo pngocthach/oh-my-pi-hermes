@@ -243,6 +243,18 @@ export class SessionWorker {
 		if (!this.#transport?.isRunning) return;
 		await this.#transport.sendCommand({ type: "abort" });
 	}
+	async newSession(): Promise<void> {
+		if (!this.#transport || !this.isAlive)
+			throw new Error("Session worker is not running");
+		const response = await this.#transport.sendCommand<{ cancelled: boolean }>({
+			type: "new_session",
+		});
+		if (!response.success)
+			throw new Error(response.error ?? "Failed to start a new session");
+		if (response.data?.cancelled)
+			throw new Error("OMP cancelled the new session request");
+		await this.#refreshState();
+	}
 	async getAvailableModels(): Promise<AvailableModel[]> {
 		if (!this.#transport || !this.isAlive)
 			throw new Error("Session worker is not running");

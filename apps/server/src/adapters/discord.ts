@@ -57,6 +57,7 @@ export interface DiscordAdapterOptions {
 	registerCommands?: boolean;
 }
 const MODEL_CACHE_MS = 30_000;
+const TITLE_WORKER_ID = "discord:thread-title-generator";
 
 interface CachedModels {
 	expiresAt: number;
@@ -68,12 +69,17 @@ interface DiscordOutputChannel {
 	sendTyping(): Promise<void>;
 	send(options: MessageCreateOptions): Promise<Message>;
 }
+interface DiscordThreadChannel extends DiscordOutputChannel {
+	setName(name: string): Promise<unknown>;
+}
 
 interface PendingDiscordPrompt {
 	content: string;
 	message: Message;
 	channel: DiscordOutputChannel;
 	sessionKey: string;
+	threadToRename?: DiscordThreadChannel;
+	threadTitleInput?: string;
 }
 
 interface ConversationQueue {
@@ -87,6 +93,7 @@ export class DiscordAdapter {
 	readonly #seenMessageIds = new Set<string>();
 	readonly #queues = new Map<string, ConversationQueue>();
 	readonly #modelCache = new Map<string, CachedModels>();
+	#titleQueue: Promise<void> = Promise.resolve();
 
 	constructor(options: DiscordAdapterOptions) {
 		this.#options = options;
@@ -386,7 +393,8 @@ export class DiscordAdapter {
 			.trim();
 		if (!content) return;
 		let outputChannel: DiscordOutputChannel = message.channel;
-
+		let threadTitleInput: string | undefined;
+		let threadToRename: DiscordThreadChannel | undefined;
 		if (
 			!isDm &&
 			!message.channel.isThread() &&
@@ -403,6 +411,8 @@ export class DiscordAdapter {
 					reason: "Isolate an agent conversation",
 				});
 				outputChannel = thread;
+				threadToRename = thread;
+				threadTitleInput = content;
 				sessionKey = `discord:${message.guildId}:thread:${thread.id}`;
 			} catch (error) {
 				await message.channel.send({
@@ -420,7 +430,14 @@ export class DiscordAdapter {
 			if (context)
 				content = `[Recent Discord context]\n${context}\n\n[Current message]\n${content}`;
 		}
-		this.#enqueue({ content, message, channel: outputChannel, sessionKey });
+		this.#enqueue({
+			content,
+			message,
+			channel: outputChannel,
+			sessionKey,
+			threadToRename,
+			threadTitleInput,
+		});
 	}
 
 	#admitMessage(message: Message): boolean {
@@ -451,6 +468,45 @@ export class DiscordAdapter {
 			this.#options.policy.allowedUserIds.has(message.author.id);
 		return guildAllowed || userAllowed;
 	}
+	#scheduleThreadRename(thread: DiscordThreadChannel, input: string): void {
+		const job = this.#titleQueue.then(() =>
+			this.#generateThreadTitle(thread, input),
+		);
+		this.#titleQueue = job.catch((error) => {
+			console.warn("Discord thread title generation failed", error);
+		});
+	}
+
+	async #generateThreadTitle(
+		thread: DiscordThreadChannel,
+		input: string,
+	): Promise<void> {
+		const titleWorker = await this.#options.pool.getOrCreate(
+			TITLE_WORKER_ID,
+			false,
+			{ model: "@smol" },
+		);
+		await titleWorker.newSession();
+		const titlePrompt = [
+			"Generate a concise Discord thread title for the user request below.",
+			"Return only the title, 3 to 8 words, no quotes, no markdown, no punctuation at the end.",
+			"",
+			input.slice(0, 2_000),
+		].join("\n");
+		let generated = "";
+		for await (const frame of titleWorker.runPrompt(titlePrompt))
+			generated += textDeltaFromFrame(frame) ?? "";
+		const title =
+			generated
+				.replace(/```[\\s\\S]*?```/g, "")
+				.split(/\r?\n/)
+				.map((line) => line.trim())
+				.find(Boolean)
+				?.replace(/^["'`]+|["'`]+$/g, "")
+				.slice(0, 100) || input.split(/\r?\n/, 1)[0]?.slice(0, 100);
+		if (title) await thread.setName(title);
+	}
+
 
 	#sessionKey(message: Message): string {
 		if (message.channel.isDMBased()) return `discord:dm:${message.channel.id}`;
@@ -530,6 +586,11 @@ export class DiscordAdapter {
 				lastPreview = preview;
 				lastEditAt = Date.now();
 			}
+			if (prompt.threadToRename && prompt.threadTitleInput)
+				this.#scheduleThreadRename(
+					prompt.threadToRename,
+					prompt.threadTitleInput,
+				);
 
 			if (!visibleText) {
 				if (responseMessage)

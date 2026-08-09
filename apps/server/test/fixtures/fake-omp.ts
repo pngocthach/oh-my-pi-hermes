@@ -118,6 +118,18 @@ while (true) {
 					success: true,
 				});
 				break;
+			case "new_session":
+				sessionId = crypto.randomUUID();
+				sessionFile = join(sessionDirectory, `fake_${sessionId}.jsonl`);
+				messageCount = 0;
+				emit({
+					type: "response",
+					command: command.type,
+					id: command.id,
+					success: true,
+					data: { cancelled: false },
+				});
+				break;
 			case "switch_session": {
 				const requestedFile = String(command.sessionPath);
 				const file = Bun.file(requestedFile);

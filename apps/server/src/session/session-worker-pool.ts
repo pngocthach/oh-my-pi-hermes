@@ -63,6 +63,7 @@ export class SessionWorkerPool {
 	async getOrCreate(
 		externalId: string,
 		persistent = true,
+		options: { model?: string } = {},
 	): Promise<SessionWorker> {
 		if (!this.#initialized)
 			throw new Error("SessionWorkerPool must be initialized before use");
@@ -78,7 +79,7 @@ export class SessionWorkerPool {
 
 		const creating = this.#creating.get(externalId);
 		if (creating) return creating;
-		const promise = this.#createWorker(externalId, persistent);
+		const promise = this.#createWorker(externalId, persistent, options);
 		this.#creating.set(externalId, promise);
 		try {
 			return await promise;
@@ -115,15 +116,19 @@ export class SessionWorkerPool {
 	async #createWorker(
 		externalId: string,
 		persistent: boolean,
+		options: { model?: string },
 	): Promise<SessionWorker> {
 		await this.#ensureCapacity();
 		const digest = createHash("sha256").update(externalId).digest("hex");
+		const command = options.model
+			? [...this.#options.transport.command, "--model", options.model]
+			: this.#options.transport.command;
 		const worker = new SessionWorker({
 			externalId,
 			sessionDirectory: join(this.#options.sessionRoot, digest),
 			persistent,
 			store: this.#options.store,
-			transport: this.#options.transport,
+			transport: { ...this.#options.transport, command },
 		});
 		await worker.start();
 		this.#entries.set(externalId, { worker, lastUsedAt: Date.now() });
